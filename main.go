@@ -27,8 +27,8 @@ var (
 	renderedTemplate bytes.Buffer
 	configCommands   []string
 	lastResult       = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "keychain_result",
-		Help: "Keychain run result (0 = error, 0.5 = warning, 1 = noop or success",
+		Name: "keyserver_result",
+		Help: "Keyserver run result (0 = error, 0.5 = warning, 1 = noop or success",
 	})
 )
 
@@ -86,6 +86,66 @@ func (s *KeyServer) Generate() error {
 		s.Template.ROLL = append(s.Template.ROLL, timeString)
 	}
 	return nil
+}
+
+func (s *KeyServer) Run(log *zap.Logger) {
+	for {
+		needsKey, usedKey, err := getKeychainStatus(s.Config)
+		if err != nil {
+			log.Error("keychain error", zap.Error(err))
+			lastResult.Set(0.0)
+			continue
+		}
+		if len(s.Config.Devices) != len(usedKey) {
+			log.Error("keychain error", zap.Error(errors.New("didn't get a reply from all devices")))
+			lastResult.Set(0.5)
+			continue
+		}
+		if needsKey {
+			s.UsedKey = usedKey[0]
+			if err := s.Generate(); err != nil {
+				log.Error("generation error", zap.Error(err))
+				lastResult.Set(0.5)
+				continue
+			}
+
+			funcMap := template.FuncMap{
+				"inc": func(i int) int {
+					return i + 1
+				},
+			}
+			t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFiles("keychain.tmpl")
+			if err != nil {
+				log.Error("template error", zap.Error(err))
+				lastResult.Set(0.5)
+				continue
+			}
+			executionErr := t.Execute(&renderedTemplate, s)
+			if executionErr != nil {
+				log.Error("template execution error", zap.Error(executionErr))
+				lastResult.Set(0.5)
+				continue
+			}
+			templateString := renderedTemplate.String()
+			rawCfgCommands := strings.Split(templateString, "\n")
+			for _, value := range rawCfgCommands {
+				if len(value) > 1 {
+					configCommands = append(configCommands, value)
+				}
+			}
+			if err := updateKeychain(s.Config, configCommands); err != nil {
+				log.Error("update keychain error", zap.Error(err))
+				lastResult.Set(0.0)
+				continue
+			}
+			log.Info("updated keychain")
+			lastResult.Set(1.0)
+		} else {
+			lastResult.Set(1.0)
+			log.Info("no action needed")
+		}
+		time.Sleep(time.Hour * 24)
+	}
 }
 
 func NewLogger() (*zap.Logger, error) {
@@ -267,62 +327,6 @@ func main() {
 		log.Info("listening on /metrics at :8799")
 		http.ListenAndServe(":8799", nil)
 	}()
-	for {
-		needsKey, usedKey, err := getKeychainStatus(config)
-		if err != nil {
-			log.Error("keychain error", zap.Error(err))
-			lastResult.Set(0.0)
-			continue
-		}
-		if len(config.Devices) != len(usedKey) {
-			log.Error("keychain error", zap.Error(errors.New("didn't get a reply from all devices")))
-			lastResult.Set(0.5)
-			continue
-		}
-		if needsKey {
-			server := NewKeyServer(config)
-			server.UsedKey = usedKey[0]
-			if err := server.Generate(); err != nil {
-				log.Error("generation error", zap.Error(err))
-				lastResult.Set(0.5)
-				continue
-			}
-
-			funcMap := template.FuncMap{
-				"inc": func(i int) int {
-					return i + 1
-				},
-			}
-			t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFiles("keychain.tmpl")
-			if err != nil {
-				log.Error("template error", zap.Error(err))
-				lastResult.Set(0.5)
-				continue
-			}
-			executionErr := t.Execute(&renderedTemplate, server)
-			if executionErr != nil {
-				log.Error("template execution error", zap.Error(executionErr))
-				lastResult.Set(0.5)
-				continue
-			}
-			templateString := renderedTemplate.String()
-			rawCfgCommands := strings.Split(templateString, "\n")
-			for _, value := range rawCfgCommands {
-				if len(value) > 1 {
-					configCommands = append(configCommands, value)
-				}
-			}
-			if err := updateKeychain(config, configCommands); err != nil {
-				log.Error("update keychain error", zap.Error(err))
-				lastResult.Set(0.0)
-				continue
-			}
-			log.Info("updated keychain")
-			lastResult.Set(1.0)
-		} else {
-			lastResult.Set(1.0)
-			log.Info("no action needed")
-		}
-		time.Sleep(time.Hour * 24)
-	}
+	server := NewKeyServer(config)
+	server.Run(log)
 }
