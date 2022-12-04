@@ -1,0 +1,20 @@
+{{ $keyname := .Config.Keychain }}
+{{ $usedkey := .UsedKey }}
+{{range $x, $a := .Template.CAK }}{{ if ge $x $usedkey }}set security authentication-key-chains key-chain {{ $keyname }} key {{ inc $x }} secret {{ $a }}
+{{ continue }}
+{{ else }}
+set security authentication-key-chains key-chain {{ $keyname }} key {{ $x }} secret {{ $a }}
+{{ end }}
+{{ end }}
+{{ range $y, $n := .Template.CKN }}{{ if ge $y $usedkey }}set security authentication-key-chains key-chain {{ $keyname }} key {{ inc $y }} key-name {{ $n }}
+{{ continue }}
+{{ else }}
+set security authentication-key-chains key-chain {{ $keyname }} key {{ $y }} key-name {{ $n }}
+{{ end }}
+{{ end }}
+{{ range $z, $r := .Template.ROLL }}{{ if ge $z $usedkey }}set security authentication-key-chains key-chain {{ $keyname }} key {{ inc $z }} start-time {{ $r }}
+{{ continue }}
+{{ else }}
+set security authentication-key-chains key-chain {{ $keyname }} key {{ $z }} start-time {{ $r }}
+{{ end }}
+{{ end }}

@@ -1,0 +1,11 @@
+{
+    "user": "adalin",
+    "key": "/Users/adalin/.ssh/id_ed25519",
+    "interval": 168,
+    "keychain": "macsec",
+    "ntp": true,
+    "devices": [
+        "192.168.100.254",
+        "192.168.100.1"
+    ]
+}
