@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -26,7 +27,9 @@ import (
 var (
 	renderedTemplate bytes.Buffer
 	configCommands   []string
-	lastResult       = promauto.NewGauge(prometheus.GaugeOpts{
+	//go:embed keychain.tmpl
+	embedTemplate embed.FS
+	lastResult    = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "keyserver_result",
 		Help: "Keyserver run result (0 = error, 0.5 = warning, 1 = noop or success)",
 	})
@@ -128,7 +131,7 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 			},
 		}
 
-		t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFiles("keychain.tmpl")
+		t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFS(embedTemplate, "*.tmpl")
 		if err != nil {
 			log.Error("template error", zap.Error(err))
 			lastResult.Set(0.5)
