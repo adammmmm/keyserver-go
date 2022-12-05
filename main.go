@@ -28,7 +28,7 @@ var (
 	configCommands   []string
 	lastResult       = promauto.NewGauge(prometheus.GaugeOpts{
 		Name: "keyserver_result",
-		Help: "Keyserver run result (0 = error, 0.5 = warning, 1 = noop or success",
+		Help: "Keyserver run result (0 = error, 0.5 = warning, 1 = noop or success)",
 	})
 )
 
@@ -72,6 +72,7 @@ func (s *KeyServer) Generate() error {
 		}
 		s.Template.CAK = append(s.Template.CAK, hex.EncodeToString(bytes))
 	}
+
 	for y := 0; y < 31; y++ {
 		bytes := make([]byte, 31)
 		if _, err := rand.Read(bytes); err != nil {
@@ -79,12 +80,14 @@ func (s *KeyServer) Generate() error {
 		}
 		s.Template.CKN = append(s.Template.CKN, hex.EncodeToString(bytes))
 	}
+
 	for z := 0; z < 31; z++ {
 		initial := time.Now().Add(time.Hour * time.Duration(s.Config.Interval))
 		next := initial.Add((time.Hour * time.Duration(z)) * time.Duration(s.Config.Interval))
 		timeString := next.Format("2006-01-02.15:04:05")
 		s.Template.ROLL = append(s.Template.ROLL, timeString)
 	}
+
 	return nil
 }
 
@@ -104,11 +107,13 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 		lastResult.Set(0.0)
 		return err
 	}
+
 	if len(s.Config.Devices) != len(usedKey) {
 		log.Error("keychain error", zap.Error(errors.New("didn't get a reply from all devices")))
 		lastResult.Set(0.5)
 		return err
 	}
+
 	if needsKey {
 		s.UsedKey = usedKey[0]
 		if err := s.Generate(); err != nil {
@@ -122,18 +127,21 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 				return i + 1
 			},
 		}
+
 		t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFiles("keychain.tmpl")
 		if err != nil {
 			log.Error("template error", zap.Error(err))
 			lastResult.Set(0.5)
 			return err
 		}
+
 		executionErr := t.Execute(&renderedTemplate, s)
 		if executionErr != nil {
 			log.Error("template execution error", zap.Error(executionErr))
 			lastResult.Set(0.5)
 			return err
 		}
+
 		templateString := renderedTemplate.String()
 		rawCfgCommands := strings.Split(templateString, "\n")
 		for _, value := range rawCfgCommands {
@@ -141,15 +149,18 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 				configCommands = append(configCommands, value)
 			}
 		}
+
 		if err := updateKeychain(s.Config, configCommands, log); err != nil {
 			log.Error("update keychain error", zap.Error(err))
 			lastResult.Set(0.0)
 			return err
 		}
+
 		log.Info("updated keychain")
 		lastResult.Set(1.0)
 		return nil
 	}
+
 	lastResult.Set(1.0)
 	return nil
 }
@@ -160,19 +171,23 @@ func NewLogger() (*zap.Logger, error) {
 		"keyserver.log",
 		"stderr",
 	}
+
 	return cfg.Build()
 }
 
 func readConfig(file string, log *zap.Logger) (Config, error) {
 	var config Config
+
 	jsonFile, err := os.Open(file)
 	if err != nil {
 		log.Error("couldn't open configuration file.")
 		return config, err
 	}
 	defer jsonFile.Close()
+
 	byteValue, _ := io.ReadAll(jsonFile)
 	json.Unmarshal(byteValue, &config)
+
 	return config, nil
 }
 
@@ -208,6 +223,7 @@ func checkIfSame(ActiveIDs []int) bool {
 func getKeychainStatus(config Config) (bool, []int, error) {
 	var ActiveIDs []int
 	var readyForKeys []string
+
 	auth := &junos.AuthMethod{
 		Username:   config.User,
 		PrivateKey: config.Key,
@@ -237,8 +253,10 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 			errMsg := fmt.Sprintf("keychain parsing error on router %s", router)
 			return false, []int{}, errors.New(errMsg)
 		}
+
 		hakrKeychain := fmt.Sprintf("//hakr-keychain[hakr-keychain-name='%s']", config.Keychain)
 		hakrInformation := xmlquery.FindOne(doc, hakrKeychain)
+
 		if hakrInformation == nil {
 			errMsg := fmt.Sprintf("couldn't get keychain information on router %s", router)
 			return false, []int{}, errors.New(errMsg)
@@ -268,11 +286,13 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 			errMsg := fmt.Sprintf("couldn't get next key time from router %s", router)
 			return false, []int{}, errors.New(errMsg)
 		}
+
 		ask := activeSendKey.InnerText()
 		ark := activeReceiveKey.InnerText()
 		nsk := nextSendKey.InnerText()
 		nrk := nextReceiveKey.InnerText()
 		nkt := nextKeyTime.InnerText()
+
 		if ask == ark {
 			askInt, err := strconv.Atoi(ask)
 			if err != nil {
@@ -290,10 +310,12 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 			return false, []int{}, errors.New(errMsg)
 		}
 	}
+
 	sameKeys := checkIfSame(ActiveIDs)
 	if !sameKeys {
 		return false, []int{}, errors.New("keychains unsynchronized")
 	}
+
 	if len(readyForKeys) > 0 {
 		if len(config.Devices) != len(readyForKeys) {
 			return false, []int{}, errors.New("keychains unsynchronized")
@@ -304,19 +326,20 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 }
 
 func updateKeychain(config Config, cmds []string, log *zap.Logger) error {
-	// TODO: implement a rollback of already committed routers if a subsequent router fails
 	var committed []string
+
 	auth := &junos.AuthMethod{
 		Username:   config.User,
 		PrivateKey: config.Key,
 	}
-	// Check for configuration locks
+
 	for _, router := range config.Devices {
 		jnpr, err := junos.NewSession(router+":22", auth)
 		if err != nil {
 			return err
 		}
 		defer jnpr.Close()
+
 		log.Info("keychain update check lock", zap.String("router:", router))
 		if err := jnpr.CommitCheck(); err != nil {
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
@@ -332,6 +355,7 @@ func updateKeychain(config Config, cmds []string, log *zap.Logger) error {
 			return err
 		}
 		defer jnpr.Close()
+
 		log.Info("keychain update config", zap.String("router:", router))
 		if err := jnpr.Config(cmds, "set", true); err != nil {
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
@@ -354,12 +378,14 @@ func rollbackCommitted(config Config, routers []string, log *zap.Logger) error {
 		Username:   config.User,
 		PrivateKey: config.Key,
 	}
+
 	for _, router := range routers {
 		jnpr, err := junos.NewSession(router+":22", auth)
 		if err != nil {
 			return err
 		}
 		defer jnpr.Close()
+
 		log.Info("rollback config", zap.String("router:", router))
 		if err := jnpr.Rollback(1); err != nil {
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
@@ -368,29 +394,25 @@ func rollbackCommitted(config Config, routers []string, log *zap.Logger) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
 func main() {
 	log, _ := NewLogger()
 	defer log.Sync()
+
 	config, err := readConfig("config.json", log)
 	if err != nil {
 		log.Error("config issue")
 	}
-	log.Debug("config",
-		zap.String("user:", config.User),
-		zap.String("key:", config.Key),
-		zap.Int("interval:", config.Interval),
-		zap.String("keychain:", config.Keychain),
-		zap.Bool("ntp:", config.NTP),
-		zap.Strings("devices:", config.Devices),
-	)
+
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
 		log.Info("listening on /metrics at :8799")
 		http.ListenAndServe(":8799", nil)
 	}()
+
 	server := NewKeyServer(config)
 	server.Run(log)
 }
