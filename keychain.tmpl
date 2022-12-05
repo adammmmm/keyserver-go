@@ -1,6 +1,6 @@
 {{ $keyname := .Config.Keychain }}
 {{ $usedkey := .UsedKey }}
-{{range $x, $a := .Template.CAK }}{{ if ge $x $usedkey }}set security authentication-key-chains key-chain {{ $keyname }} key {{ inc $x }} secret {{ $a }}
+{{ range $x, $a := .Template.CAK }}{{ if ge $x $usedkey }}set security authentication-key-chains key-chain {{ $keyname }} key {{ inc $x }} secret {{ $a }}
 {{ continue }}
 {{ else }}
 set security authentication-key-chains key-chain {{ $keyname }} key {{ $x }} secret {{ $a }}
