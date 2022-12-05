@@ -77,7 +77,7 @@ func (s *KeyServer) Generate() error {
 	}
 
 	for y := 0; y < 31; y++ {
-		bytes := make([]byte, 31)
+		bytes := make([]byte, 32)
 		if _, err := rand.Read(bytes); err != nil {
 			return err
 		}
