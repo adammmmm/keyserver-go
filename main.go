@@ -151,7 +151,6 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 		return nil
 	}
 	lastResult.Set(1.0)
-	log.Info("no action needed")
 	return nil
 }
 
@@ -318,7 +317,7 @@ func updateKeychain(config Config, cmds []string, log *zap.Logger) error {
 			return err
 		}
 		defer jnpr.Close()
-		log.Info("updateKeychain", zap.String("checking lock on:", router))
+		log.Info("keychain update check lock", zap.String("router:", router))
 		if err := jnpr.CommitCheck(); err != nil {
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
 				continue
@@ -333,7 +332,7 @@ func updateKeychain(config Config, cmds []string, log *zap.Logger) error {
 			return err
 		}
 		defer jnpr.Close()
-		log.Info("updateKeychain", zap.String("configuring:", router))
+		log.Info("keychain update config", zap.String("router:", router))
 		if err := jnpr.Config(cmds, "set", true); err != nil {
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
 				committed = append(committed, router)
@@ -361,7 +360,7 @@ func rollbackCommitted(config Config, routers []string, log *zap.Logger) error {
 			return err
 		}
 		defer jnpr.Close()
-		log.Info("rollbackCommitted", zap.String("rolling back router:", router))
+		log.Info("rollback config", zap.String("router:", router))
 		if err := jnpr.Rollback(1); err != nil {
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
 				continue
