@@ -223,42 +223,51 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 		if config.NTP {
 			ok := checkNTP(jnpr)
 			if !ok {
-				return false, []int{}, errors.New("ntp mandatory but router doesn't have it configured")
+				errMsg := fmt.Sprintf("ntp mandatory but router %s does not have it configured", router)
+				return false, []int{}, errors.New(errMsg)
 			}
 		}
 
 		keychainOutput, err := jnpr.Command("show security keychain", "xml")
 		if err != nil {
-			return false, []int{}, errors.New("keychain error")
+			errMsg := fmt.Sprintf("keychain op command error on router %s", router)
+			return false, []int{}, errors.New(errMsg)
 		}
 		doc, err := xmlquery.Parse(strings.NewReader(keychainOutput))
 		if err != nil {
-			return false, []int{}, errors.New("keychain error")
+			errMsg := fmt.Sprintf("keychain parsing error on router %s", router)
+			return false, []int{}, errors.New(errMsg)
 		}
 		hakrKeychain := fmt.Sprintf("//hakr-keychain[hakr-keychain-name='%s']", config.Keychain)
 		hakrInformation := xmlquery.FindOne(doc, hakrKeychain)
 		if hakrInformation == nil {
-			return false, []int{}, errors.New("couldn't get keychain information")
+			errMsg := fmt.Sprintf("couldn't get keychain information on router %s", router)
+			return false, []int{}, errors.New(errMsg)
 		}
 		activeSendKey := hakrInformation.SelectElement("hakr-keychain-active-send-key")
 		if activeSendKey == nil {
-			return false, []int{}, errors.New("keychain active send key error")
+			errMsg := fmt.Sprintf("couldn't get active send key from router %s", router)
+			return false, []int{}, errors.New(errMsg)
 		}
 		activeReceiveKey := hakrInformation.SelectElement("hakr-keychain-active-receive-key")
 		if activeReceiveKey == nil {
-			return false, []int{}, errors.New("keychain active receive key error")
+			errMsg := fmt.Sprintf("couldn't get active receive key from router %s", router)
+			return false, []int{}, errors.New(errMsg)
 		}
 		nextSendKey := hakrInformation.SelectElement("hakr-keychain-next-send-key")
 		if nextSendKey == nil {
-			return false, []int{}, errors.New("keychain next send key error")
+			errMsg := fmt.Sprintf("couldn't get next send key from router %s", router)
+			return false, []int{}, errors.New(errMsg)
 		}
 		nextReceiveKey := hakrInformation.SelectElement("hakr-keychain-next-receive-key")
 		if nextReceiveKey == nil {
-			return false, []int{}, errors.New("keychain next receive key error")
+			errMsg := fmt.Sprintf("couldn't get next receive key from router %s", router)
+			return false, []int{}, errors.New(errMsg)
 		}
 		nextKeyTime := hakrInformation.SelectElement("hakr-keychain-next-key-time")
 		if nextKeyTime == nil {
-			return false, []int{}, errors.New("keychain next key time error")
+			errMsg := fmt.Sprintf("couldn't get next key time from router %s", router)
+			return false, []int{}, errors.New(errMsg)
 		}
 		ask := activeSendKey.InnerText()
 		ark := activeReceiveKey.InnerText()
@@ -268,7 +277,8 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 		if ask == ark {
 			askInt, err := strconv.Atoi(ask)
 			if err != nil {
-				return false, []int{}, errors.New("string conversion error")
+				errMsg := fmt.Sprintf("string conversion error of %s on router %s", ask, router)
+				return false, []int{}, errors.New(errMsg)
 			}
 			if nsk == "None" && nrk == "None" && nkt == "None" {
 				ActiveIDs = append(ActiveIDs, askInt)
@@ -277,7 +287,8 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 				ActiveIDs = append(ActiveIDs, askInt)
 			}
 		} else {
-			return false, []int{}, errors.New("differing send and receive keys")
+			errMsg := fmt.Sprintf("differing send (%s) and receive (%s) keys on %s", ask, nsk, router)
+			return false, []int{}, errors.New(errMsg)
 		}
 	}
 	sameKeys := checkIfSame(ActiveIDs)
