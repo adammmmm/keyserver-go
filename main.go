@@ -141,7 +141,7 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 				configCommands = append(configCommands, value)
 			}
 		}
-		if err := updateKeychain(s.Config, configCommands); err != nil {
+		if err := updateKeychain(s.Config, configCommands, log); err != nil {
 			log.Error("update keychain error", zap.Error(err))
 			lastResult.Set(0.0)
 			return err
@@ -304,18 +304,65 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 	return false, ActiveIDs, nil
 }
 
-func updateKeychain(config Config, cmds []string) error {
+func updateKeychain(config Config, cmds []string, log *zap.Logger) error {
+	// TODO: implement a rollback of already committed routers if a subsequent router fails
+	var committed []string
 	auth := &junos.AuthMethod{
 		Username:   config.User,
 		PrivateKey: config.Key,
 	}
+	// Check for configuration locks
 	for _, router := range config.Devices {
 		jnpr, err := junos.NewSession(router+":22", auth)
 		if err != nil {
 			return err
 		}
 		defer jnpr.Close()
+		log.Info("updateKeychain", zap.String("checking lock on:", router))
+		if err := jnpr.CommitCheck(); err != nil {
+			if err.Error() == "expected element type <commit-results> but have <ok>" {
+				continue
+			}
+			return err
+		}
+	}
+
+	for _, router := range config.Devices {
+		jnpr, err := junos.NewSession(router+":22", auth)
+		if err != nil {
+			return err
+		}
+		defer jnpr.Close()
+		log.Info("updateKeychain", zap.String("configuring:", router))
 		if err := jnpr.Config(cmds, "set", true); err != nil {
+			if err.Error() == "expected element type <commit-results> but have <ok>" {
+				committed = append(committed, router)
+				continue
+			}
+			if rollErr := rollbackCommitted(config, committed, log); rollErr != nil {
+				return err
+			}
+			return err
+		}
+		committed = append(committed, router)
+	}
+
+	return nil
+}
+
+func rollbackCommitted(config Config, routers []string, log *zap.Logger) error {
+	auth := &junos.AuthMethod{
+		Username:   config.User,
+		PrivateKey: config.Key,
+	}
+	for _, router := range routers {
+		jnpr, err := junos.NewSession(router+":22", auth)
+		if err != nil {
+			return err
+		}
+		defer jnpr.Close()
+		log.Info("rollbackCommitted", zap.String("rolling back router:", router))
+		if err := jnpr.Rollback(1); err != nil {
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
 				continue
 			}
