@@ -90,62 +90,69 @@ func (s *KeyServer) Generate() error {
 
 func (s *KeyServer) Run(log *zap.Logger) {
 	for {
-		needsKey, usedKey, err := getKeychainStatus(s.Config)
-		if err != nil {
-			log.Error("keychain error", zap.Error(err))
-			lastResult.Set(0.0)
-			continue
-		}
-		if len(s.Config.Devices) != len(usedKey) {
-			log.Error("keychain error", zap.Error(errors.New("didn't get a reply from all devices")))
-			lastResult.Set(0.5)
-			continue
-		}
-		if needsKey {
-			s.UsedKey = usedKey[0]
-			if err := s.Generate(); err != nil {
-				log.Error("generation error", zap.Error(err))
-				lastResult.Set(0.5)
-				continue
-			}
-
-			funcMap := template.FuncMap{
-				"inc": func(i int) int {
-					return i + 1
-				},
-			}
-			t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFiles("keychain.tmpl")
-			if err != nil {
-				log.Error("template error", zap.Error(err))
-				lastResult.Set(0.5)
-				continue
-			}
-			executionErr := t.Execute(&renderedTemplate, s)
-			if executionErr != nil {
-				log.Error("template execution error", zap.Error(executionErr))
-				lastResult.Set(0.5)
-				continue
-			}
-			templateString := renderedTemplate.String()
-			rawCfgCommands := strings.Split(templateString, "\n")
-			for _, value := range rawCfgCommands {
-				if len(value) > 1 {
-					configCommands = append(configCommands, value)
-				}
-			}
-			if err := updateKeychain(s.Config, configCommands); err != nil {
-				log.Error("update keychain error", zap.Error(err))
-				lastResult.Set(0.0)
-				continue
-			}
-			log.Info("updated keychain")
-			lastResult.Set(1.0)
-		} else {
-			lastResult.Set(1.0)
-			log.Info("no action needed")
+		if err := s.loop(log); err != nil {
+			log.Error("loop error", zap.Error(err))
 		}
 		time.Sleep(time.Hour * 24)
 	}
+}
+
+func (s *KeyServer) loop(log *zap.Logger) error {
+	needsKey, usedKey, err := getKeychainStatus(s.Config)
+	if err != nil {
+		log.Error("keychain error", zap.Error(err))
+		lastResult.Set(0.0)
+		return err
+	}
+	if len(s.Config.Devices) != len(usedKey) {
+		log.Error("keychain error", zap.Error(errors.New("didn't get a reply from all devices")))
+		lastResult.Set(0.5)
+		return err
+	}
+	if needsKey {
+		s.UsedKey = usedKey[0]
+		if err := s.Generate(); err != nil {
+			log.Error("generation error", zap.Error(err))
+			lastResult.Set(0.5)
+			return err
+		}
+
+		funcMap := template.FuncMap{
+			"inc": func(i int) int {
+				return i + 1
+			},
+		}
+		t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFiles("keychain.tmpl")
+		if err != nil {
+			log.Error("template error", zap.Error(err))
+			lastResult.Set(0.5)
+			return err
+		}
+		executionErr := t.Execute(&renderedTemplate, s)
+		if executionErr != nil {
+			log.Error("template execution error", zap.Error(executionErr))
+			lastResult.Set(0.5)
+			return err
+		}
+		templateString := renderedTemplate.String()
+		rawCfgCommands := strings.Split(templateString, "\n")
+		for _, value := range rawCfgCommands {
+			if len(value) > 1 {
+				configCommands = append(configCommands, value)
+			}
+		}
+		if err := updateKeychain(s.Config, configCommands); err != nil {
+			log.Error("update keychain error", zap.Error(err))
+			lastResult.Set(0.0)
+			return err
+		}
+		log.Info("updated keychain")
+		lastResult.Set(1.0)
+		return nil
+	}
+	lastResult.Set(1.0)
+	log.Info("no action needed")
+	return nil
 }
 
 func NewLogger() (*zap.Logger, error) {
