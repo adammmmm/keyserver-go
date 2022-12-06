@@ -9,3 +9,6 @@ Same functionality.
 Configuration is done in config.json instead of yml.
 
 An example configuration is provided.
+
+prometheus metrics are available on :8799/metrics
+the value of the metric keyserver_result represents the outcome of last run: 0 = error, 0.5 = warning, 1 = noop or success
