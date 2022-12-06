@@ -1,4 +1,4 @@
-module github.com/adammmmm/keyserver
+module github.com/adammmmm/keyserver-go
 
 go 1.19
 
