@@ -15,4 +15,4 @@
 # vendor/
 
 *.log
-keyserver
+keyserver-go
