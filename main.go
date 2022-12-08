@@ -68,18 +68,17 @@ func NewKeyServer(config Config) *KeyServer {
 }
 
 func (s *KeyServer) Generate() error {
+	bytes := make([]byte, 32)
 	for i := 0; i < 31; i++ {
-		bytesOne := make([]byte, 32)
-		if _, err := rand.Read(bytesOne); err != nil {
+		if _, err := rand.Read(bytes); err != nil {
 			return err
 		}
-		s.Template.CAK = append(s.Template.CAK, hex.EncodeToString(bytesOne))
+		s.Template.CAK = append(s.Template.CAK, hex.EncodeToString(bytes))
 
-		bytesTwo := make([]byte, 32)
-		if _, err := rand.Read(bytesTwo); err != nil {
+		if _, err := rand.Read(bytes); err != nil {
 			return err
 		}
-		s.Template.CKN = append(s.Template.CAK, hex.EncodeToString(bytesTwo))
+		s.Template.CKN = append(s.Template.CKN, hex.EncodeToString(bytes))
 
 		initial := time.Now().Add(time.Hour * time.Duration(s.Config.Interval))
 		next := initial.Add((time.Hour * time.Duration(i)) * time.Duration(s.Config.Interval))
