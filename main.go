@@ -69,28 +69,23 @@ func NewKeyServer(config Config) *KeyServer {
 
 func (s *KeyServer) Generate() error {
 	for i := 0; i < 31; i++ {
-		bytes := make([]byte, 32)
-		if _, err := rand.Read(bytes); err != nil {
+		bytesOne := make([]byte, 32)
+		if _, err := rand.Read(bytesOne); err != nil {
 			return err
 		}
-		s.Template.CAK = append(s.Template.CAK, hex.EncodeToString(bytes))
-	}
+		s.Template.CAK = append(s.Template.CAK, hex.EncodeToString(bytesOne))
 
-	for y := 0; y < 31; y++ {
-		bytes := make([]byte, 32)
-		if _, err := rand.Read(bytes); err != nil {
+		bytesTwo := make([]byte, 32)
+		if _, err := rand.Read(bytesTwo); err != nil {
 			return err
 		}
-		s.Template.CKN = append(s.Template.CKN, hex.EncodeToString(bytes))
-	}
+		s.Template.CKN = append(s.Template.CAK, hex.EncodeToString(bytesTwo))
 
-	for z := 0; z < 31; z++ {
 		initial := time.Now().Add(time.Hour * time.Duration(s.Config.Interval))
-		next := initial.Add((time.Hour * time.Duration(z)) * time.Duration(s.Config.Interval))
+		next := initial.Add((time.Hour * time.Duration(i)) * time.Duration(s.Config.Interval))
 		timeString := next.Format("2006-01-02.15:04:05")
 		s.Template.ROLL = append(s.Template.ROLL, timeString)
 	}
-
 	return nil
 }
 
