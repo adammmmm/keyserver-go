@@ -24,6 +24,12 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	RunError   = 0.0
+	RunWarning = 0.5
+	RunSuccess = 1.0
+)
+
 var (
 	renderedTemplate bytes.Buffer
 	configCommands   []string
@@ -101,13 +107,13 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 	needsKey, usedKey, err := getKeychainStatus(s.Config)
 	if err != nil {
 		log.Error("keychain error", zap.Error(err))
-		lastResult.Set(0.0)
+		lastResult.Set(RunError)
 		return err
 	}
 
 	if len(s.Config.Devices) != len(usedKey) {
 		log.Error("keychain error", zap.Error(errors.New("didn't get a reply from all devices")))
-		lastResult.Set(0.5)
+		lastResult.Set(RunWarning)
 		return err
 	}
 
@@ -115,7 +121,7 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 		s.UsedKey = usedKey[0]
 		if err := s.Generate(); err != nil {
 			log.Error("generation error", zap.Error(err))
-			lastResult.Set(0.5)
+			lastResult.Set(RunWarning)
 			return err
 		}
 
@@ -128,14 +134,14 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 		t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFS(embedTemplate, "*.tmpl")
 		if err != nil {
 			log.Error("template error", zap.Error(err))
-			lastResult.Set(0.5)
+			lastResult.Set(RunWarning)
 			return err
 		}
 
 		executionErr := t.Execute(&renderedTemplate, s)
 		if executionErr != nil {
 			log.Error("template execution error", zap.Error(executionErr))
-			lastResult.Set(0.5)
+			lastResult.Set(RunWarning)
 			return err
 		}
 
@@ -149,16 +155,16 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 
 		if err := updateKeychain(s.Config, configCommands, log); err != nil {
 			log.Error("update keychain error", zap.Error(err))
-			lastResult.Set(0.0)
+			lastResult.Set(RunError)
 			return err
 		}
 
 		log.Info("updated keychain")
-		lastResult.Set(1.0)
+		lastResult.Set(RunSuccess)
 		return nil
 	}
 
-	lastResult.Set(1.0)
+	lastResult.Set(RunSuccess)
 	return nil
 }
 
