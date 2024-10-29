@@ -2,8 +2,6 @@ module github.com/adammmmm/keyserver-go
 
 go 1.21
 
-toolchain go1.23.2
-
 require (
 	github.com/antchfx/xmlquery v1.4.2
 	github.com/prometheus/client_golang v1.20.5
