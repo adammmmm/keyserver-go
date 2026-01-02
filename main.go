@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -16,11 +15,11 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/adammmmm/go-junos"
 	"github.com/antchfx/xmlquery"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/adammmmm/go-junos"
 	"go.uber.org/zap"
 )
 
@@ -31,8 +30,6 @@ const (
 )
 
 var (
-	renderedTemplate bytes.Buffer
-	configCommands   []string
 	//go:embed keychain.tmpl
 	embedTemplate embed.FS
 	lastResult    = promauto.NewGauge(prometheus.GaugeOpts{
@@ -74,8 +71,8 @@ func NewKeyServer(config Config) *KeyServer {
 }
 
 func (s *KeyServer) Generate() error {
-	bytes := make([]byte, 32)
 	for i := 0; i < 31; i++ {
+		bytes := make([]byte, 32)
 		if _, err := rand.Read(bytes); err != nil {
 			return err
 		}
@@ -88,8 +85,7 @@ func (s *KeyServer) Generate() error {
 
 		initial := time.Now().Add(time.Hour * time.Duration(s.Config.Interval))
 		next := initial.Add((time.Hour * time.Duration(i)) * time.Duration(s.Config.Interval))
-		timeString := next.Format("2006-01-02.15:04:05")
-		s.Template.ROLL = append(s.Template.ROLL, timeString)
+		s.Template.ROLL = append(s.Template.ROLL, next.Format("2006-01-02.15:04:05"))
 	}
 	return nil
 }
@@ -102,8 +98,11 @@ func (s *KeyServer) Run(log *zap.Logger) {
 		time.Sleep(time.Hour * 24)
 	}
 }
-
 func (s *KeyServer) loop(log *zap.Logger) error {
+	// Local buffers instead of global
+	var renderedTemplate bytes.Buffer
+	var configCommands []string
+
 	needsKey, usedKey, err := getKeychainStatus(s.Config)
 	if err != nil {
 		log.Error("keychain error", zap.Error(err))
@@ -114,56 +113,55 @@ func (s *KeyServer) loop(log *zap.Logger) error {
 	if len(s.Config.Devices) != len(usedKey) {
 		log.Error("keychain error", zap.Error(errors.New("didn't get a reply from all devices")))
 		lastResult.Set(RunWarning)
-		return err
+		return errors.New("device response mismatch")
 	}
 
-	if needsKey {
-		s.UsedKey = usedKey[0]
-		if err := s.Generate(); err != nil {
-			log.Error("generation error", zap.Error(err))
-			lastResult.Set(RunWarning)
-			return err
-		}
-
-		funcMap := template.FuncMap{
-			"inc": func(i int) int {
-				return i + 1
-			},
-		}
-
-		t, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFS(embedTemplate, "*.tmpl")
-		if err != nil {
-			log.Error("template error", zap.Error(err))
-			lastResult.Set(RunWarning)
-			return err
-		}
-
-		executionErr := t.Execute(&renderedTemplate, s)
-		if executionErr != nil {
-			log.Error("template execution error", zap.Error(executionErr))
-			lastResult.Set(RunWarning)
-			return err
-		}
-
-		templateString := renderedTemplate.String()
-		rawCfgCommands := strings.Split(templateString, "\n")
-		for _, value := range rawCfgCommands {
-			if len(value) > 1 {
-				configCommands = append(configCommands, value)
-			}
-		}
-
-		if err := updateKeychain(s.Config, configCommands, log); err != nil {
-			log.Error("update keychain error", zap.Error(err))
-			lastResult.Set(RunError)
-			return err
-		}
-
-		log.Info("updated keychain")
+	if !needsKey {
 		lastResult.Set(RunSuccess)
 		return nil
 	}
 
+	// Generate new keys
+	s.UsedKey = usedKey[0]
+	if err := s.Generate(); err != nil {
+		log.Error("generation error", zap.Error(err))
+		lastResult.Set(RunWarning)
+		return err
+	}
+
+	// Prepare template
+	funcMap := template.FuncMap{
+		"inc": func(i int) int { return i + 1 },
+	}
+
+	tmpl, err := template.New("keychain.tmpl").Funcs(funcMap).ParseFS(embedTemplate, "*.tmpl")
+	if err != nil {
+		log.Error("template parse error", zap.Error(err))
+		lastResult.Set(RunWarning)
+		return err
+	}
+
+	if err := tmpl.Execute(&renderedTemplate, s); err != nil {
+		log.Error("template execution error", zap.Error(err))
+		lastResult.Set(RunWarning)
+		return err
+	}
+
+	// Split into commands
+	for _, line := range strings.Split(renderedTemplate.String(), "\n") {
+		if len(strings.TrimSpace(line)) > 0 {
+			configCommands = append(configCommands, line)
+		}
+	}
+
+	// Update keychain safely
+	if err := updateKeychain(s.Config, configCommands, log); err != nil {
+		log.Error("update keychain error", zap.Error(err))
+		lastResult.Set(RunError)
+		return err
+	}
+
+	log.Info("keychain updated successfully")
 	lastResult.Set(RunSuccess)
 	return nil
 }
@@ -181,42 +179,41 @@ func NewLogger() (*zap.Logger, error) {
 func readConfig(file string, log *zap.Logger) (Config, error) {
 	var config Config
 
-	jsonFile, err := os.Open(file)
+	byteValue, err := os.ReadFile(file)
 	if err != nil {
 		log.Error("couldn't open configuration file.")
 		return config, err
 	}
-	defer jsonFile.Close()
 
-	byteValue, _ := io.ReadAll(jsonFile)
-	json.Unmarshal(byteValue, &config)
+	if err := json.Unmarshal(byteValue, &config); err != nil {
+		return config, err
+	}
 
 	return config, nil
 }
 
 func checkNTP(jnpr *junos.Junos) bool {
 	output, err := jnpr.Command("show system uptime", "xml")
-	if err != nil {
+	if err != nil || output == "" {
 		return false
 	}
+
 	doc, err := xmlquery.Parse(strings.NewReader(output))
 	if err != nil {
 		return false
 	}
 
-	uptimeInformation := xmlquery.FindOne(doc, "//system-uptime-information")
-	if ntp := uptimeInformation.SelectElement("time-source"); ntp != nil {
-		if !strings.Contains(ntp.InnerText(), "NTP") {
-			return false
-		}
-	}
-
-	return true
+	ntp := xmlquery.FindOne(doc, "//system-uptime-information/time-source[contains(., 'NTP')]")
+	return ntp != nil
 }
 
 func checkIfSame(ActiveIDs []int) bool {
-	for i := 0; i < len(ActiveIDs); i++ {
-		if ActiveIDs[i] != ActiveIDs[0] {
+	if len(ActiveIDs) <= 1 {
+		return true
+	}
+	firstID := ActiveIDs[0]
+	for _, id := range ActiveIDs {
+		if id != firstID {
 			return false
 		}
 	}
@@ -231,146 +228,145 @@ func getKeychainStatus(config Config) (bool, []int, error) {
 		Username:   config.User,
 		PrivateKey: config.Key,
 	}
+
 	for _, router := range config.Devices {
 		jnpr, err := junos.NewSession(router+":22", auth)
 		if err != nil {
-			return false, []int{}, err
+			return false, nil, fmt.Errorf("failed to connect to %s: %w", router, err)
 		}
-		defer jnpr.Close()
 
-		if config.NTP {
-			ok := checkNTP(jnpr)
-			if !ok {
-				errMsg := fmt.Sprintf("ntp mandatory but router %s does not have it configured", router)
-				return false, []int{}, errors.New(errMsg)
+		// Ensure session closes after processing this router
+		func() {
+			defer jnpr.Close()
+
+			// NTP check
+			if config.NTP {
+				if !checkNTP(jnpr) {
+					err = fmt.Errorf("ntp mandatory but router %s does not have it configured", router)
+					return
+				}
 			}
-		}
 
-		keychainOutput, err := jnpr.Command("show security keychain", "xml")
-		if err != nil {
-			errMsg := fmt.Sprintf("keychain op command error on router %s", router)
-			return false, []int{}, errors.New(errMsg)
-		}
-		doc, err := xmlquery.Parse(strings.NewReader(keychainOutput))
-		if err != nil {
-			errMsg := fmt.Sprintf("keychain parsing error on router %s", router)
-			return false, []int{}, errors.New(errMsg)
-		}
-
-		hakrKeychain := fmt.Sprintf("//hakr-keychain[hakr-keychain-name='%s']", config.Keychain)
-		hakrInformation := xmlquery.FindOne(doc, hakrKeychain)
-
-		if hakrInformation == nil {
-			errMsg := fmt.Sprintf("couldn't get keychain information on router %s", router)
-			return false, []int{}, errors.New(errMsg)
-		}
-		activeSendKey := hakrInformation.SelectElement("hakr-keychain-active-send-key")
-		if activeSendKey == nil {
-			errMsg := fmt.Sprintf("couldn't get active send key from router %s", router)
-			return false, []int{}, errors.New(errMsg)
-		}
-		activeReceiveKey := hakrInformation.SelectElement("hakr-keychain-active-receive-key")
-		if activeReceiveKey == nil {
-			errMsg := fmt.Sprintf("couldn't get active receive key from router %s", router)
-			return false, []int{}, errors.New(errMsg)
-		}
-		nextSendKey := hakrInformation.SelectElement("hakr-keychain-next-send-key")
-		if nextSendKey == nil {
-			errMsg := fmt.Sprintf("couldn't get next send key from router %s", router)
-			return false, []int{}, errors.New(errMsg)
-		}
-		nextReceiveKey := hakrInformation.SelectElement("hakr-keychain-next-receive-key")
-		if nextReceiveKey == nil {
-			errMsg := fmt.Sprintf("couldn't get next receive key from router %s", router)
-			return false, []int{}, errors.New(errMsg)
-		}
-		nextKeyTime := hakrInformation.SelectElement("hakr-keychain-next-key-time")
-		if nextKeyTime == nil {
-			errMsg := fmt.Sprintf("couldn't get next key time from router %s", router)
-			return false, []int{}, errors.New(errMsg)
-		}
-
-		ask := activeSendKey.InnerText()
-		ark := activeReceiveKey.InnerText()
-		nsk := nextSendKey.InnerText()
-		nrk := nextReceiveKey.InnerText()
-		nkt := nextKeyTime.InnerText()
-
-		if ask == ark {
-			askInt, err := strconv.Atoi(ask)
-			if err != nil {
-				errMsg := fmt.Sprintf("string conversion error of %s on router %s", ask, router)
-				return false, []int{}, errors.New(errMsg)
+			// Get keychain info
+			keychainOutput, cmdErr := jnpr.Command("show security keychain", "xml")
+			if cmdErr != nil {
+				err = fmt.Errorf("keychain command error on router %s: %w", router, cmdErr)
+				return
 			}
-			if nsk == "None" && nrk == "None" && nkt == "None" {
+
+			doc, parseErr := xmlquery.Parse(strings.NewReader(keychainOutput))
+			if parseErr != nil {
+				err = fmt.Errorf("keychain parsing error on router %s: %w", router, parseErr)
+				return
+			}
+
+			hakrPath := fmt.Sprintf("//hakr-keychain[hakr-keychain-name='%s']", config.Keychain)
+			hakrInformation := xmlquery.FindOne(doc, hakrPath)
+			if hakrInformation == nil {
+				err = fmt.Errorf("couldn't get keychain info on router %s", router)
+				return
+			}
+
+			ask := hakrInformation.SelectElement("hakr-keychain-active-send-key")
+			ark := hakrInformation.SelectElement("hakr-keychain-active-receive-key")
+			nsk := hakrInformation.SelectElement("hakr-keychain-next-send-key")
+			nrk := hakrInformation.SelectElement("hakr-keychain-next-receive-key")
+			nkt := hakrInformation.SelectElement("hakr-keychain-next-key-time")
+
+			if ask == nil || ark == nil || nsk == nil || nrk == nil || nkt == nil {
+				err = fmt.Errorf("missing key elements on router %s", router)
+				return
+			}
+
+			askVal, arkVal := ask.InnerText(), ark.InnerText()
+			if askVal != arkVal {
+				err = fmt.Errorf("send (%s) and receive (%s) keys differ on %s", askVal, arkVal, router)
+				return
+			}
+
+			askInt, convErr := strconv.Atoi(askVal)
+			if convErr != nil {
+				err = fmt.Errorf("cannot convert active key to int on router %s: %w", router, convErr)
+				return
+			}
+
+			// Check if router is ready for new keys
+			if nsk.InnerText() == "None" && nrk.InnerText() == "None" && nkt.InnerText() == "None" {
 				ActiveIDs = append(ActiveIDs, askInt)
 				readyForKeys = append(readyForKeys, router)
 			} else {
 				ActiveIDs = append(ActiveIDs, askInt)
 			}
-		} else {
-			errMsg := fmt.Sprintf("differing send (%s) and receive (%s) keys on %s", ask, nsk, router)
-			return false, []int{}, errors.New(errMsg)
+		}()
+
+		if err != nil {
+			return false, nil, err
 		}
 	}
 
-	sameKeys := checkIfSame(ActiveIDs)
-	if !sameKeys {
-		return false, []int{}, errors.New("keychains unsynchronized")
+	// Ensure all active IDs are the same
+	if !checkIfSame(ActiveIDs) {
+		return false, nil, errors.New("keychains unsynchronized across devices")
 	}
 
 	if len(readyForKeys) > 0 {
 		if len(config.Devices) != len(readyForKeys) {
-			return false, []int{}, errors.New("keychains unsynchronized")
+			return false, nil, errors.New("not all devices ready for new keys")
 		}
 		return true, ActiveIDs, nil
 	}
+
 	return false, ActiveIDs, nil
 }
 
 func updateKeychain(config Config, cmds []string, log *zap.Logger) error {
 	var committed []string
-
 	auth := &junos.AuthMethod{
 		Username:   config.User,
 		PrivateKey: config.Key,
 	}
 
+	// First, check commit locks on all devices
 	for _, router := range config.Devices {
 		jnpr, err := junos.NewSession(router+":22", auth)
 		if err != nil {
 			return err
 		}
-		defer jnpr.Close()
 
-		log.Info("keychain update check lock", zap.String("router:", router))
+		log.Info("checking commit lock", zap.String("router", router))
 		if err := jnpr.CommitCheck(); err != nil {
+			jnpr.Close()
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
 				continue
 			}
 			return err
 		}
+		jnpr.Close()
 	}
 
+	// Apply configuration to each device
 	for _, router := range config.Devices {
 		jnpr, err := junos.NewSession(router+":22", auth)
 		if err != nil {
 			return err
 		}
-		defer jnpr.Close()
 
-		log.Info("keychain update config", zap.String("router:", router))
+		log.Info("applying keychain configuration", zap.String("router", router))
 		if err := jnpr.Config(cmds, "set", true); err != nil {
+			jnpr.Close()
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
 				committed = append(committed, router)
 				continue
 			}
+
 			if rollErr := rollbackCommitted(config, committed, log); rollErr != nil {
-				return err
+				return fmt.Errorf("config error: %v, rollback error: %v", err, rollErr)
 			}
 			return err
 		}
+
 		committed = append(committed, router)
+		jnpr.Close()
 	}
 
 	return nil
@@ -387,15 +383,17 @@ func rollbackCommitted(config Config, routers []string, log *zap.Logger) error {
 		if err != nil {
 			return err
 		}
-		defer jnpr.Close()
 
-		log.Info("rollback config", zap.String("router:", router))
+		log.Info("rolling back configuration", zap.String("router", router))
 		if err := jnpr.Rollback(1); err != nil {
+			jnpr.Close()
 			if err.Error() == "expected element type <commit-results> but have <ok>" {
 				continue
 			}
 			return err
 		}
+
+		jnpr.Close()
 	}
 
 	return nil
@@ -407,7 +405,7 @@ func main() {
 
 	config, err := readConfig("config.json", log)
 	if err != nil {
-		log.Error("config issue")
+		log.Fatal("config issue")
 	}
 
 	go func() {
